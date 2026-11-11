@@ -62,6 +62,72 @@ def enviar_mensagem(texto):
     return True
 
 
+# ----------------------------------------------------------------------------
+# Formatação das mensagens
+# ----------------------------------------------------------------------------
+
+CABECALHOS = {
+    "nova": "✈️ NOVA OPORTUNIDADE DE VIAGEM!",
+    "queda": "📉 O PREÇO CAIU!",
+    "lembrete": "🔁 A PROMOÇÃO CONTINUA!",
+}
+
+
+def formatar_reais(valor):
+    """1100.5 -> 'R$ 1.100,50'"""
+    texto = f"{valor:,.2f}"
+    return "R$ " + texto.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _companhias(viagem):
+    ida, volta = viagem["trecho_ida"]["companhia"], viagem["trecho_volta"]["companhia"]
+    return ida if ida == volta else f"{ida} (ida) / {volta} (volta)"
+
+
+def _escalas(viagem):
+    ida, volta = viagem["trecho_ida"]["escalas"], viagem["trecho_volta"]["escalas"]
+    if ida == 0 and volta == 0:
+        return "voo direto nos dois trechos"
+    return f"ida {ida}, volta {volta}"
+
+
+def formatar_alerta(destino, origem, viagens, tipo, preco_limite, preco_anterior=None):
+    """Monta o texto do alerta de um destino com até N opções de datas.
+
+    destino: item da lista "destinos" do config.json
+    origem:  bloco "origem" do config.json
+    viagens: lista de viagens confirmadas pelo buscador, da mais barata para a mais cara
+    """
+    linhas = [
+        CABECALHOS.get(tipo, CABECALHOS["nova"]),
+        "",
+        f"Destino: {destino['cidade']} - {destino['uf']}",
+        f"Origem: {origem['cidade']} - {origem['uf']}",
+    ]
+    if tipo == "queda" and preco_anterior:
+        linhas.append(f"Último alerta: {formatar_reais(preco_anterior)}")
+
+    for numero, viagem in enumerate(viagens, start=1):
+        linhas += [
+            "",
+            f"Opção {numero}",
+            f"Ida: {viagem['ida']:%d/%m/%Y} | Volta: {viagem['volta']:%d/%m/%Y}",
+            f"Duração: {viagem['duracao']} dias",
+            f"Companhia: {_companhias(viagem)}",
+            f"Escalas: {_escalas(viagem)}",
+            f"Preço total: {formatar_reais(viagem['preco'])}",
+            f"Link: {viagem['link']}",
+        ]
+
+    linhas += ["", f"Preço máximo configurado: {formatar_reais(preco_limite)}"]
+    return "\n".join(linhas)
+
+
+def formatar_aviso_falha(motivo):
+    """Mensagem enviada quando a execução inteira falha (para você não confundir com 'sem promoções')."""
+    return f"⚠️ MONITOR DE PASSAGENS COM PROBLEMA\n\n{motivo}\n\nVeja os logs da execução no GitHub Actions."
+
+
 if __name__ == "__main__":
     # Este bloco só roda quando você executa "python notificador.py" diretamente.
     # Quando outro arquivo fizer "import notificador", ele é ignorado.

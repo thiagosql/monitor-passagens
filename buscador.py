@@ -143,6 +143,18 @@ def _com_retentativas(consulta, descricao):
     return resultado
 
 
+def escalas_para_filtro(max_escalas):
+    """Converte o limite de escalas do config.json no filtro equivalente do Google.
+
+    None (ou 3+) = qualquer número de escalas; 0 = só voos diretos; 1 = até 1; 2 = até 2.
+    """
+    if max_escalas is None:
+        return MaxStops.ANY
+    return {0: MaxStops.NON_STOP, 1: MaxStops.ONE_STOP_OR_FEWER, 2: MaxStops.TWO_OR_FEWER_STOPS}.get(
+        max_escalas, MaxStops.ANY
+    )
+
+
 def montar_link(origem_texto, destino_iata, ida, volta, moeda="BRL", pais="BR"):
     """Link de pesquisa do Google Flights já com origem, destino e datas preenchidos."""
     consulta = f"Flights to {destino_iata} from {origem_texto} on {ida.isoformat()} through {volta.isoformat()}"
@@ -163,7 +175,7 @@ def _blocos(inicio, fim):
         atual = final_bloco + timedelta(days=1)
 
 
-def varrer_calendario(origens, destino, duracao, inicio, fim, pausa=2, moeda="BRL", pais="BR"):
+def varrer_calendario(origens, destino, duracao, inicio, fim, pausa=2, moeda="BRL", pais="BR", max_escalas=None):
     """Menor preço de ida e volta para cada data de ida entre inicio e fim.
 
     Retorna (combinacoes, blocos_consultados, blocos_vazios).
@@ -184,7 +196,7 @@ def varrer_calendario(origens, destino, duracao, inicio, fim, pausa=2, moeda="BR
             trip_type=tipo,
             passenger_info=PassengerInfo(adults=1),
             flight_segments=segmentos,
-            stops=MaxStops.ANY,
+            stops=escalas_para_filtro(max_escalas),
             seat_type=SeatType.ECONOMY,
             from_date=comeco_bloco.isoformat(),
             to_date=fim_bloco.isoformat(),
@@ -210,7 +222,7 @@ def varrer_calendario(origens, destino, duracao, inicio, fim, pausa=2, moeda="BR
     return combinacoes, blocos_consultados, blocos_vazios
 
 
-def varrer_destino(origens, destino, duracoes, inicio, fim, pausa=2, moeda="BRL", pais="BR"):
+def varrer_destino(origens, destino, duracoes, inicio, fim, pausa=2, moeda="BRL", pais="BR", max_escalas=None):
     """Roda a varredura para todas as durações e junta tudo, do mais barato ao mais caro.
 
     Retorna (combinacoes, cobertura). cobertura = {"blocos": total, "vazios": quantos vieram vazios}.
@@ -218,7 +230,9 @@ def varrer_destino(origens, destino, duracoes, inicio, fim, pausa=2, moeda="BRL"
     todas = []
     cobertura = {"blocos": 0, "vazios": 0}
     for duracao in duracoes:
-        encontradas, consultados, vazios = varrer_calendario(origens, destino, duracao, inicio, fim, pausa, moeda, pais)
+        encontradas, consultados, vazios = varrer_calendario(
+            origens, destino, duracao, inicio, fim, pausa, moeda, pais, max_escalas
+        )
         log.info("  %s, %d dias: %d datas com preço (%d de %d blocos vazios)",
                  destino, duracao, len(encontradas), vazios, consultados)
         todas.extend(encontradas)
@@ -232,7 +246,7 @@ def varrer_destino(origens, destino, duracoes, inicio, fim, pausa=2, moeda="BRL"
 # Fase 2: confirmação de uma combinação de datas
 # ----------------------------------------------------------------------------
 
-def confirmar_viagem(origens, destino, ida, volta, origem_texto, moeda="BRL", pais="BR"):
+def confirmar_viagem(origens, destino, ida, volta, origem_texto, moeda="BRL", pais="BR", max_escalas=None):
     """Busca completa para datas exatas. Retorna a opção mais barata ou None se não houver voos."""
     segmentos, tipo = build_flight_segments(
         origin=_aeroportos(origens),
@@ -244,7 +258,7 @@ def confirmar_viagem(origens, destino, ida, volta, origem_texto, moeda="BRL", pa
         trip_type=tipo,
         passenger_info=PassengerInfo(adults=1),
         flight_segments=segmentos,
-        stops=MaxStops.ANY,
+        stops=escalas_para_filtro(max_escalas),
         seat_type=SeatType.ECONOMY,
         sort_by=SortBy.CHEAPEST,
         show_all_results=False,  # mesma lista enxuta que o site mostra primeiro
@@ -283,22 +297,35 @@ def confirmar_viagem(origens, destino, ida, volta, origem_texto, moeda="BRL", pa
     return min(opcoes, key=lambda o: o["preco"])
 
 
-def confirmar_melhores(origens, destino, combinacoes, quantidade, origem_texto, pausa=2, moeda="BRL", pais="BR"):
-    """Confirma as combinações mais baratas até obter `quantidade` viagens com voos.
+def confirmar_melhores(origens, destino, combinacoes, quantidade, origem_texto, pausa=2, moeda="BRL", pais="BR",
+                       max_escalas=None, aceitar=None, limite_tentativas=None):
+    """Confirma as combinações mais baratas até obter `quantidade` viagens válidas.
 
-    Se a busca completa de uma data vier vazia (falha do Google ou falta real de voos),
-    passa para a próxima mais barata. Para evitar execuções longas demais, tenta no máximo
-    o dobro de `quantidade`. Retorna (viagens_confirmadas, datas_tentadas).
+    - Se a busca completa de uma data vier vazia (falha do Google ou falta real de voos),
+      passa para a próxima mais barata.
+    - `aceitar` é uma função opcional que recebe a viagem confirmada e diz se ela vale
+      (ex.: preço real ainda abaixo do limite). Viagens recusadas não contam.
+    - Para evitar execuções longas, tenta no máximo `limite_tentativas` datas
+      (padrão: o dobro de `quantidade`).
+
+    Retorna (viagens_confirmadas, datas_tentadas).
     """
+    limite_tentativas = limite_tentativas or quantidade * 2
     confirmadas = []
     tentadas = 0
-    for combinacao in combinacoes[: quantidade * 2]:
+    for combinacao in combinacoes[:limite_tentativas]:
         if len(confirmadas) >= quantidade:
             break
         tentadas += 1
-        viagem = confirmar_viagem(origens, destino, combinacao["ida"], combinacao["volta"], origem_texto, moeda, pais)
-        if viagem is not None:
-            viagem["preco_calendario"] = combinacao["preco"]
-            confirmadas.append(viagem)
+        viagem = confirmar_viagem(origens, destino, combinacao["ida"], combinacao["volta"], origem_texto,
+                                  moeda, pais, max_escalas)
         time.sleep(pausa)
+        if viagem is None:
+            continue
+        viagem["preco_calendario"] = combinacao["preco"]
+        if aceitar is not None and not aceitar(viagem):
+            log.info("    %s %s/%s descartada após confirmação (R$ %.2f)",
+                     destino, viagem["ida"], viagem["volta"], viagem["preco"])
+            continue
+        confirmadas.append(viagem)
     return confirmadas, tentadas

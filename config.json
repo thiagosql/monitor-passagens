@@ -15,14 +15,21 @@
     { "iata": "BVB", "cidade": "Boa Vista", "uf": "RR", "ativo": true },
     { "iata": "THE", "cidade": "Teresina", "uf": "PI", "ativo": true },
     { "iata": "PMW", "cidade": "Palmas", "uf": "TO", "ativo": true },
-    { "iata": "SLZ", "cidade": "São Luís", "uf": "MA", "ativo": true }
+    { "iata": "SLZ", "cidade": "São Luís", "uf": "MA", "ativo": true },
+    { "iata": "SCL", "cidade": "Santiago", "uf": "Chile", "ativo": true, "preco_maximo": 800 }
   ],
   "preco_maximo": 560,
+  "max_escalas_por_trecho": null,
   "duracao_minima_dias": 4,
   "duracao_maxima_dias": 7,
   "meses_a_frente": 6,
   "moeda": "BRL",
   "pais": "BR",
   "candidatos_por_destino": 3,
-  "pausa_entre_buscas_segundos": 2
+  "pausa_entre_buscas_segundos": 2,
+  "alertas": {
+    "queda_minima_percentual": 10,
+    "repetir_apos_dias": 7,
+    "manter_historico_dias": 30
+  }
 }
