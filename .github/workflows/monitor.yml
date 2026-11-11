@@ -2,17 +2,12 @@ name: Monitor de passagens
 
 on:
   schedule:
-    # 4 execuções por dia, cada uma numa máquina nova (outro IP) e verificando só
-    # alguns destinos (destinos_por_execucao no config.json). Com 12 destinos e 3 por
-    # execução, todos são verificados uma vez por dia.
+    # A cada 3 horas (00:17, 03:17, 06:17 ... 21:17), cada execução numa máquina nova
+    # (outro IP) e verificando só alguns destinos (destinos_por_execucao no config.json).
+    # Algumas máquinas pegam IPs bloqueados pelo Google; com 8 execuções por dia sobra
+    # capacidade para todos os destinos serem verificados mesmo assim.
     # Minuto "quebrado" de propósito: nos horários cheios o GitHub atrasa as execuções.
-    - cron: "17 6 * * *"
-      timezone: "America/Sao_Paulo"
-    - cron: "17 11 * * *"
-      timezone: "America/Sao_Paulo"
-    - cron: "17 16 * * *"
-      timezone: "America/Sao_Paulo"
-    - cron: "17 21 * * *"
+    - cron: "17 */3 * * *"
       timezone: "America/Sao_Paulo"
   workflow_dispatch: # cria o botão "Run workflow" para rodar manualmente
 
@@ -33,6 +28,10 @@ jobs:
     steps:
       - name: Baixar o código
         uses: actions/checkout@v6
+        with:
+          # Sempre a versão mais recente da main no momento em que a execução começa.
+          # Sem isso, uma execução que ficou na fila usaria o histórico de antes da anterior.
+          ref: main
 
       - name: Instalar o Python
         uses: actions/setup-python@v6

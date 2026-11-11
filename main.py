@@ -152,10 +152,18 @@ def processar_destino(cfg, destino, janela):
     return resultado
 
 
+# Fração mínima de blocos do calendário com dados para o destino contar como verificado.
+# Abaixo disso, ele continua no topo da fila e é tentado de novo na próxima execução.
+COBERTURA_MINIMA_DESTINO = 0.75
+
+
 def verificacao_valida(resultado):
-    """Só conta como verificado o destino sem erro e com pelo menos parte do calendário respondida."""
+    """Só conta como verificado o destino sem erro e com a maior parte do calendário respondida."""
     cobertura = resultado["cobertura"]
-    return not resultado["erro"] and cobertura["blocos"] > cobertura["vazios"]
+    if resultado["erro"] or not cobertura["blocos"]:
+        return False
+    com_dados = cobertura["blocos"] - cobertura["vazios"]
+    return com_dados / cobertura["blocos"] >= COBERTURA_MINIMA_DESTINO
 
 
 def alertar_se_necessario(cfg, destino, resultado, hist, simular):
