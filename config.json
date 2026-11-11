@@ -1,0 +1,28 @@
+{
+  "origem": {
+    "aeroportos": ["CNF"],
+    "cidade": "Belo Horizonte",
+    "uf": "MG"
+  },
+  "destinos": [
+    { "iata": "CGB", "cidade": "Cuiabá", "uf": "MT", "ativo": true },
+    { "iata": "CGR", "cidade": "Campo Grande", "uf": "MS", "ativo": true },
+    { "iata": "BYO", "cidade": "Bonito", "uf": "MS", "ativo": true },
+    { "iata": "BEL", "cidade": "Belém", "uf": "PA", "ativo": true },
+    { "iata": "MCP", "cidade": "Macapá", "uf": "AP", "ativo": true },
+    { "iata": "RBR", "cidade": "Rio Branco", "uf": "AC", "ativo": true },
+    { "iata": "PVH", "cidade": "Porto Velho", "uf": "RO", "ativo": true },
+    { "iata": "BVB", "cidade": "Boa Vista", "uf": "RR", "ativo": true },
+    { "iata": "THE", "cidade": "Teresina", "uf": "PI", "ativo": true },
+    { "iata": "PMW", "cidade": "Palmas", "uf": "TO", "ativo": true },
+    { "iata": "SLZ", "cidade": "São Luís", "uf": "MA", "ativo": true }
+  ],
+  "preco_maximo": 560,
+  "duracao_minima_dias": 4,
+  "duracao_maxima_dias": 7,
+  "meses_a_frente": 6,
+  "moeda": "BRL",
+  "pais": "BR",
+  "candidatos_por_destino": 3,
+  "pausa_entre_buscas_segundos": 2
+}
