@@ -26,10 +26,12 @@
   "moeda": "BRL",
   "pais": "BR",
   "candidatos_por_destino": 3,
-  "pausa_entre_buscas_segundos": 2,
+  "pausa_entre_buscas_segundos": 4,
+  "destinos_por_execucao": 3,
   "alertas": {
     "queda_minima_percentual": 10,
     "repetir_apos_dias": 7,
-    "manter_historico_dias": 30
+    "manter_historico_dias": 30,
+    "avisar_sem_verificacao_horas": 48
   }
 }

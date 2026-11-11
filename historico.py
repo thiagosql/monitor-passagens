@@ -1,61 +1,76 @@
-"""Histórico de alertas enviados, guardado em historico.json.
+"""Histórico do monitor, guardado em historico.json.
 
-Estratégia (opção B, por destino):
-- Cada destino tem no máximo um registro: o último alerta enviado.
-- Um destino gera alerta quando:
-    "nova"     -> não existe registro para ele;
-    "queda"    -> o menor preço de hoje é X% menor que o do último alerta;
-    "lembrete" -> o último alerta tem pelo menos N dias e ainda há preço dentro do limite.
-- Registros antigos (ou de destinos que saíram do config.json) são apagados,
-  então o arquivo nunca passa de um registro por destino.
+O arquivo guarda três coisas:
 
-Formato do arquivo:
-{
-  "versao": 1,
-  "destinos": {
-    "PMW": {
-      "data_alerta": "2026-11-11",
-      "tipo": "nova",
-      "menor_preco": 829.0,
-      "viagens": [{"ida": "2027-01-21", "volta": "2027-01-25", "preco": 829.0}]
-    }
-  }
-}
+1. "destinos": o último alerta enviado de cada destino (opção B, por destino).
+   Um destino gera alerta quando:
+     "nova"     -> não existe registro para ele;
+     "queda"    -> o menor preço de hoje é X% menor que o do último alerta;
+     "lembrete" -> o último alerta tem pelo menos N dias e ainda há preço dentro do limite.
+
+2. "verificacoes": quando cada destino foi verificado com sucesso pela última vez.
+   Serve para montar a fila (quem está há mais tempo sem verificar vai primeiro)
+   e para avisar se algum destino ficar muito tempo sem ser verificado.
+
+3. "criado_em" e "ultimo_aviso_falha": controle interno dos avisos de problema.
+
+Registros antigos (ou de destinos que saíram do config.json) são apagados,
+então o arquivo tem no máximo dois registros por destino.
 """
 
 import json
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
 ARQUIVO_PADRAO = "historico.json"
-VERSAO = 1
+VERSAO = 2
 
 
-def _vazio():
-    return {"versao": VERSAO, "destinos": {}}
+def agora():
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _novo():
+    return {
+        "versao": VERSAO,
+        "criado_em": agora().isoformat(),
+        "destinos": {},
+        "verificacoes": {},
+        "ultimo_aviso_falha": None,
+    }
+
+
+def _completar(dados):
+    """Garante que arquivos de versões anteriores tenham todos os campos atuais."""
+    dados.setdefault("criado_em", agora().isoformat())
+    dados.setdefault("destinos", {})
+    dados.setdefault("verificacoes", {})
+    dados.setdefault("ultimo_aviso_falha", None)
+    dados["versao"] = VERSAO
+    return dados
 
 
 def carregar(caminho=ARQUIVO_PADRAO):
     """Lê o histórico. Se o arquivo não existir ou estiver corrompido, começa do zero."""
     if not os.path.exists(caminho):
         log.info("Histórico não encontrado, começando um novo.")
-        return _vazio()
+        return _novo()
 
     try:
         with open(caminho, encoding="utf-8") as arquivo:
             dados = json.load(arquivo)
     except (json.JSONDecodeError, OSError) as erro:
         log.error("Histórico ilegível (%s). Começando um novo; alertas recentes podem se repetir.", erro)
-        return _vazio()
+        return _novo()
 
-    if not isinstance(dados, dict) or not isinstance(dados.get("destinos"), dict):
+    if not isinstance(dados, dict) or not isinstance(dados.get("destinos", {}), dict):
         log.error("Histórico com formato inesperado. Começando um novo.")
-        return _vazio()
+        return _novo()
 
-    return dados
+    return _completar(dados)
 
 
 def salvar(historico, caminho=ARQUIVO_PADRAO):
@@ -77,10 +92,17 @@ def _dias_desde(data_texto, hoje):
         return None  # data inválida: o registro será tratado como antigo
 
 
-def limpar(historico, destinos_validos, manter_dias, hoje=None):
-    """Remove registros com mais de `manter_dias` dias ou de destinos fora do config.json.
+def _momento(texto):
+    try:
+        return datetime.fromisoformat(texto)
+    except (TypeError, ValueError):
+        return None
 
-    Retorna a lista de códigos removidos.
+
+def limpar(historico, destinos_validos, manter_dias, hoje=None):
+    """Remove alertas com mais de `manter_dias` dias e tudo de destinos fora do config.json.
+
+    Retorna a lista de códigos removidos da parte de alertas.
     """
     hoje = hoje or date.today()
     removidos = []
@@ -89,10 +111,17 @@ def limpar(historico, destinos_validos, manter_dias, hoje=None):
         if codigo not in destinos_validos or dias is None or dias > manter_dias:
             del historico["destinos"][codigo]
             removidos.append(codigo)
+    for codigo in list(historico["verificacoes"]):
+        if codigo not in destinos_validos:
+            del historico["verificacoes"][codigo]
     if removidos:
-        log.info("Histórico: removidos registros antigos de %s", ", ".join(removidos))
+        log.info("Histórico: removidos alertas antigos de %s", ", ".join(removidos))
     return removidos
 
+
+# ----------------------------------------------------------------------------
+# Alertas
+# ----------------------------------------------------------------------------
 
 def decidir_alerta(historico, codigo, menor_preco, queda_minima_percentual, repetir_apos_dias, hoje=None):
     """Decide se um destino deve gerar alerta hoje.
@@ -127,3 +156,54 @@ def registrar_alerta(historico, codigo, viagens, tipo, hoje=None):
             for v in viagens
         ],
     }
+
+
+# ----------------------------------------------------------------------------
+# Fila de verificação e saúde do monitor
+# ----------------------------------------------------------------------------
+
+def registrar_verificacao(historico, codigo, quando=None):
+    """Marca que o destino foi verificado com sucesso agora."""
+    historico["verificacoes"][codigo] = (quando or agora()).isoformat()
+
+
+def ordenar_por_antiguidade(historico, codigos):
+    """Ordena os destinos do que está há mais tempo sem verificação para o mais recente.
+
+    Destinos nunca verificados vêm primeiro, na ordem do config.json.
+    """
+    nunca = datetime.min.replace(tzinfo=timezone.utc)
+
+    def chave(item):
+        posicao, codigo = item
+        momento = _momento(historico["verificacoes"].get(codigo)) or nunca
+        return (momento, posicao)
+
+    return [codigo for _, codigo in sorted(enumerate(codigos), key=chave)]
+
+
+def destinos_atrasados(historico, codigos, horas, quando=None):
+    """Destinos sem verificação bem-sucedida há mais de `horas` horas.
+
+    Um destino nunca verificado conta a partir da criação do histórico,
+    para não disparar aviso logo na primeira execução.
+    """
+    quando = quando or agora()
+    limite = quando - timedelta(hours=horas)
+    criado = _momento(historico.get("criado_em")) or quando
+    atrasados = []
+    for codigo in codigos:
+        ultima = _momento(historico["verificacoes"].get(codigo)) or criado
+        if ultima < limite:
+            atrasados.append(codigo)
+    return atrasados
+
+
+def pode_avisar_falha_hoje(historico, hoje=None):
+    """Limita o aviso de problema a uma mensagem por dia."""
+    hoje = hoje or date.today()
+    return historico.get("ultimo_aviso_falha") != hoje.isoformat()
+
+
+def registrar_aviso_falha(historico, hoje=None):
+    historico["ultimo_aviso_falha"] = (hoje or date.today()).isoformat()

@@ -52,8 +52,23 @@ NOMES_COMPANHIAS = {
 }
 
 
+# Se várias consultas seguidas terminam vazias mesmo depois de todas as tentativas,
+# o Google provavelmente bloqueou o IP. Continuar só desperdiça tempo.
+VAZIOS_SEGUIDOS_PARA_BLOQUEIO = 3
+_vazios_seguidos = 0
+
+
 class ErroBusca(Exception):
     """Falha ao consultar o Google Flights (rede, bloqueio ou resposta inesperada)."""
+
+
+class BloqueioDetectado(ErroBusca):
+    """Várias consultas seguidas voltaram vazias: provável bloqueio temporário do Google."""
+
+
+def reiniciar_detector_de_bloqueio():
+    global _vazios_seguidos
+    _vazios_seguidos = 0
 
 
 # ----------------------------------------------------------------------------
@@ -116,6 +131,7 @@ def _com_retentativas(consulta, descricao):
     - Resposta vazia em todas as tentativas: retorna o vazio (pode ser falta real de voos).
     - Exceção em todas as tentativas: levanta ErroBusca com a última falha.
     """
+    global _vazios_seguidos
     ultimo_erro = None
     resultado = None
     for tentativa in range(1, TENTATIVAS + 1):
@@ -129,6 +145,7 @@ def _com_retentativas(consulta, descricao):
         if resultado:
             if tentativa > 1:
                 log.info("    %s: resposta obtida na tentativa %d", descricao, tentativa)
+            _vazios_seguidos = 0
             return resultado
 
         if tentativa < TENTATIVAS:
@@ -140,6 +157,9 @@ def _com_retentativas(consulta, descricao):
     if ultimo_erro:
         raise ErroBusca(f"{descricao}: {type(ultimo_erro).__name__}: {ultimo_erro}") from ultimo_erro
     log.warning("    %s: vazio após %d tentativas", descricao, TENTATIVAS)
+    _vazios_seguidos += 1
+    if _vazios_seguidos >= VAZIOS_SEGUIDOS_PARA_BLOQUEIO:
+        raise BloqueioDetectado(f"{_vazios_seguidos} consultas seguidas vazias (última: {descricao})")
     return resultado
 
 

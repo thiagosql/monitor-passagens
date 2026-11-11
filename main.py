@@ -1,11 +1,14 @@
 """Monitor de passagens: ponto de entrada da execução diária.
 
 Uso:
-    python main.py                  (todos os destinos ativos, envia alertas de verdade)
+    python main.py                  (próximos destinos da fila, envia alertas de verdade)
     python main.py PMW SCL          (só os destinos informados)
     python main.py --simular        (mostra as mensagens na tela, sem enviar e sem salvar histórico)
 
-Códigos de saída: 0 = execução normal, 1 = falha geral da busca, 2 = erro no config.json.
+Cada execução verifica só `destinos_por_execucao` destinos: os que estão há mais tempo sem
+verificação. Assim o volume de consultas por máquina fica baixo e o Google não bloqueia.
+
+Códigos de saída: 0 = execução normal, 1 = aviso de problema enviado, 2 = erro no config.json.
 """
 
 import argparse
@@ -19,9 +22,6 @@ import historico
 import notificador
 
 log = logging.getLogger("monitor")
-
-# Abaixo desta fração de blocos do calendário com dados, consideramos que a busca falhou.
-COBERTURA_MINIMA = 0.5
 
 
 # ----------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def validar_config(cfg):
     problemas = []
     obrigatorias = ["origem", "destinos", "preco_maximo", "duracao_minima_dias", "duracao_maxima_dias",
                     "meses_a_frente", "moeda", "pais", "candidatos_por_destino",
-                    "pausa_entre_buscas_segundos", "alertas"]
+                    "pausa_entre_buscas_segundos", "destinos_por_execucao", "alertas"]
     for chave in obrigatorias:
         if chave not in cfg:
             problemas.append(f"chave obrigatória ausente: {chave}")
@@ -51,12 +51,15 @@ def validar_config(cfg):
         problemas.append("meses_a_frente precisa estar entre 1 e 9 (limite do Google: ~10 meses)")
     if cfg["preco_maximo"] <= 0:
         problemas.append("preco_maximo precisa ser positivo")
+    if not isinstance(cfg["destinos_por_execucao"], int) or cfg["destinos_por_execucao"] < 1:
+        problemas.append("destinos_por_execucao precisa ser um inteiro >= 1")
     escalas = cfg.get("max_escalas_por_trecho")
     if escalas is not None and (not isinstance(escalas, int) or escalas < 0):
         problemas.append("max_escalas_por_trecho precisa ser null ou um inteiro >= 0")
 
     alertas = cfg["alertas"]
-    for chave in ["queda_minima_percentual", "repetir_apos_dias", "manter_historico_dias"]:
+    for chave in ["queda_minima_percentual", "repetir_apos_dias", "manter_historico_dias",
+                  "avisar_sem_verificacao_horas"]:
         if chave not in alertas:
             problemas.append(f"alertas.{chave} ausente")
     if not problemas and alertas["manter_historico_dias"] < alertas["repetir_apos_dias"]:
@@ -107,7 +110,7 @@ def processar_destino(cfg, destino, janela):
     duracoes = range(cfg["duracao_minima_dias"], cfg["duracao_maxima_dias"] + 1)
     pausa = cfg["pausa_entre_buscas_segundos"]
     resultado = {"codigo": codigo, "limite": limite, "viagens": [], "cobertura": {"blocos": 0, "vazios": 0},
-                 "menor_calendario": None, "erro": None}
+                 "menor_calendario": None, "erro": None, "bloqueado": False}
 
     log.info("== %s (%s - %s) | limite %s ==", codigo, destino["cidade"], destino["uf"],
              notificador.formatar_reais(limite))
@@ -138,11 +141,21 @@ def processar_destino(cfg, destino, janela):
         log.info("  %d viagens confirmadas em %d datas tentadas", len(viagens), tentadas)
         resultado["viagens"] = sorted(viagens, key=lambda v: v["preco"])
 
+    except buscador.BloqueioDetectado as erro:
+        log.warning("  Provável bloqueio do Google em %s: %s", codigo, erro)
+        resultado["bloqueado"] = True
+        resultado["erro"] = str(erro)
     except buscador.ErroBusca as erro:
         log.error("  Falha na busca de %s: %s", codigo, erro)
         resultado["erro"] = str(erro)
 
     return resultado
+
+
+def verificacao_valida(resultado):
+    """Só conta como verificado o destino sem erro e com pelo menos parte do calendário respondida."""
+    cobertura = resultado["cobertura"]
+    return not resultado["erro"] and cobertura["blocos"] > cobertura["vazios"]
 
 
 def alertar_se_necessario(cfg, destino, resultado, hist, simular):
@@ -180,12 +193,6 @@ def alertar_se_necessario(cfg, destino, resultado, hist, simular):
 # Execução
 # ----------------------------------------------------------------------------
 
-def avisar_falha(motivo, simular):
-    log.error(motivo)
-    if not simular:
-        notificador.enviar_mensagem(notificador.formatar_aviso_falha(motivo))
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Monitor de passagens aéreas")
     parser.add_argument("destinos", nargs="*", help="códigos IATA para testar só alguns destinos")
@@ -197,68 +204,89 @@ def main(argv=None):
     # 1. Configuração
     try:
         cfg = carregar_config()
+        problemas = validar_config(cfg)
     except (OSError, json.JSONDecodeError) as erro:
-        avisar_falha(f"Não foi possível ler o config.json: {erro}", args.simular)
-        return 2
-    problemas = validar_config(cfg)
+        problemas = [f"não foi possível ler o config.json: {erro}"]
     if problemas:
-        avisar_falha("Problemas no config.json:\n- " + "\n- ".join(problemas), args.simular)
+        log.error("Problemas no config.json:\n- %s", "\n- ".join(problemas))
+        if not args.simular:
+            notificador.enviar_mensagem(notificador.formatar_aviso_falha(
+                "Problemas no config.json:\n- " + "\n- ".join(problemas)))
         return 2
 
-    ativos = [d for d in cfg["destinos"] if d.get("ativo", True)]
-    if args.destinos:
-        pedidos = {c.upper() for c in args.destinos}
-        ativos = [d for d in ativos if d["iata"] in pedidos]
-        if not ativos:
-            log.error("Nenhum dos destinos informados está ativo no config.json")
-            return 2
-
-    janela = buscador.janela_de_busca(cfg["meses_a_frente"])
-    log.info("Monitor iniciado | %d destinos | ida entre %s e %s | %s%s",
-             len(ativos), janela[0], janela[1],
-             "escalas: qualquer" if cfg.get("max_escalas_por_trecho") is None
-             else f"até {cfg['max_escalas_por_trecho']} escala(s) por trecho",
-             " | MODO SIMULAÇÃO" if args.simular else "")
+    ativos = {d["iata"]: d for d in cfg["destinos"] if d.get("ativo", True)}
 
     # 2. Histórico
     hist = historico.carregar()
     historico.limpar(hist, {d["iata"] for d in cfg["destinos"]}, cfg["alertas"]["manter_historico_dias"])
 
-    # 3. Busca e alertas, destino por destino
-    resultados, alertas_enviados = [], 0
-    for destino in ativos:
+    # 3. Escolhe os destinos desta execução
+    if args.destinos:
+        fila = [c.upper() for c in args.destinos if c.upper() in ativos]
+        if not fila:
+            log.error("Nenhum dos destinos informados está ativo no config.json")
+            return 2
+    else:
+        fila = historico.ordenar_por_antiguidade(hist, list(ativos))[: cfg["destinos_por_execucao"]]
+
+    janela = buscador.janela_de_busca(cfg["meses_a_frente"])
+    log.info("Monitor iniciado | destinos desta execução: %s | ida entre %s e %s | %s%s",
+             ", ".join(fila), janela[0], janela[1],
+             "escalas: qualquer" if cfg.get("max_escalas_por_trecho") is None
+             else f"até {cfg['max_escalas_por_trecho']} escala(s) por trecho",
+             " | MODO SIMULAÇÃO" if args.simular else "")
+
+    # 4. Busca e alertas, destino por destino
+    buscador.reiniciar_detector_de_bloqueio()
+    resultados, alertas_enviados, bloqueado = [], 0, False
+    for codigo in fila:
+        destino = ativos[codigo]
         resultado = processar_destino(cfg, destino, janela)
         resultados.append(resultado)
+        if resultado["bloqueado"]:
+            bloqueado = True
+            log.warning("Execução interrompida para não insistir no bloqueio. "
+                        "Os destinos restantes ficam para a próxima execução.")
+            break
+        if verificacao_valida(resultado):
+            historico.registrar_verificacao(hist, codigo)
         if alertar_se_necessario(cfg, destino, resultado, hist, args.simular):
             alertas_enviados += 1
 
-    # 4. Salva o histórico (só fora da simulação)
+    # 5. Saúde do monitor: algum destino ficou tempo demais sem verificação?
+    horas = cfg["alertas"]["avisar_sem_verificacao_horas"]
+    atrasados = historico.destinos_atrasados(hist, list(ativos), horas)
+    aviso_enviado = False
+    if atrasados and historico.pode_avisar_falha_hoje(hist):
+        motivo = (f"{len(atrasados)} destino(s) sem verificação há mais de {horas} h: {', '.join(atrasados)}. "
+                  f"{'Esta execução encontrou um bloqueio do Google.' if bloqueado else ''}")
+        log.error(motivo)
+        if not args.simular:
+            aviso_enviado = notificador.enviar_mensagem(notificador.formatar_aviso_falha(motivo))
+            if aviso_enviado:
+                historico.registrar_aviso_falha(hist)
+
+    # 6. Salva o histórico (só fora da simulação)
     if not args.simular:
         historico.salvar(hist)
 
-    # 5. Resumo e detecção de falha geral
-    blocos = sum(r["cobertura"]["blocos"] for r in resultados)
-    vazios = sum(r["cobertura"]["vazios"] for r in resultados)
-    com_erro = [r["codigo"] for r in resultados if r["erro"]]
-    cobertura = (blocos - vazios) / blocos if blocos else 0.0
-
+    # 7. Resumo
     log.info("===== RESUMO =====")
     for r in resultados:
-        situacao = "ERRO" if r["erro"] else f"{len(r['viagens'])} viagem(ns) dentro do limite"
+        if r["bloqueado"]:
+            situacao = "INTERROMPIDO (bloqueio)"
+        elif r["erro"]:
+            situacao = "ERRO"
+        else:
+            situacao = f"{len(r['viagens'])} viagem(ns) dentro do limite"
         menor = notificador.formatar_reais(r["menor_calendario"]) if r["menor_calendario"] else "-"
-        log.info("  %s: menor no calendário %s | limite %s | %s", r["codigo"], menor,
-                 notificador.formatar_reais(r["limite"]), situacao)
-    log.info("Cobertura do calendário: %.0f%% | destinos com erro: %s | alertas: %d",
-             cobertura * 100, ", ".join(com_erro) or "nenhum", alertas_enviados)
+        cob = r["cobertura"]
+        log.info("  %s: menor no calendário %s | limite %s | blocos com dados %d/%d | %s", r["codigo"], menor,
+                 notificador.formatar_reais(r["limite"]), cob["blocos"] - cob["vazios"], cob["blocos"], situacao)
+    log.info("Alertas enviados: %d | bloqueio detectado: %s | destinos atrasados (> %d h): %s",
+             alertas_enviados, "sim" if bloqueado else "não", horas, ", ".join(atrasados) or "nenhum")
 
-    if len(com_erro) == len(resultados) or cobertura < COBERTURA_MINIMA:
-        avisar_falha(
-            f"A busca falhou em boa parte dos destinos (cobertura {cobertura:.0%}, "
-            f"erros em {len(com_erro)} de {len(resultados)}). Pode ser bloqueio ou mudança no Google Flights.",
-            args.simular,
-        )
-        return 1
-    return 0
+    return 1 if aviso_enviado else 0
 
 
 if __name__ == "__main__":
