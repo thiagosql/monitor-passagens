@@ -1,0 +1,61 @@
+name: Monitor de passagens
+
+on:
+  schedule:
+    # Todo dia às 07:17 no horário de Brasília. Minuto "quebrado" de propósito:
+    # nos horários cheios (07:00) o GitHub fica sobrecarregado e atrasa as execuções.
+    - cron: "17 7 * * *"
+      timezone: "America/Sao_Paulo"
+  workflow_dispatch: # cria o botão "Run workflow" para rodar manualmente
+
+# O token automático do GitHub precisa de escrita para salvar o historico.json.
+permissions:
+  contents: write
+
+# Nunca roda duas execuções ao mesmo tempo (evita conflito no histórico).
+concurrency:
+  group: monitor-passagens
+  cancel-in-progress: false
+
+jobs:
+  monitorar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v6
+
+      - name: Instalar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Instalar as bibliotecas
+        run: pip install -r requirements.txt
+
+      - name: Rodar o monitor
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
+
+      - name: Salvar o histórico no repositório
+        # Roda mesmo se o monitor terminar com erro, para não perder alertas já enviados.
+        if: success() || failure()
+        run: |
+          if [ ! -f historico.json ]; then
+            echo "Nenhum historico.json gerado nesta execução."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add historico.json
+          if git diff --cached --quiet; then
+            echo "Histórico sem mudanças, nada para salvar."
+          else
+            git commit -m "Atualiza histórico de alertas"
+            git pull --rebase
+            git push
+          fi
