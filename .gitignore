@@ -1,0 +1,17 @@
+# Ambiente virtual (é recriado a partir do requirements.txt)
+.venv/
+
+# Dados sensíveis: token do Telegram e Chat ID para testes locais
+.env
+
+# Arquivos gerados automaticamente pelo Python
+__pycache__/
+*.pyc
+
+# Configurações pessoais do editor
+.vscode/
+
+# Saídas de testes manuais
+*.log
+teste_*.txt
+teste_*.json
