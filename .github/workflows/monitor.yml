@@ -2,14 +2,20 @@ name: Monitor de passagens
 
 on:
   schedule:
-    # A cada 3 horas (00:17, 03:17, 06:17 ... 21:17), cada execução numa máquina nova
-    # (outro IP) e verificando só alguns destinos (destinos_por_execucao no config.json).
-    # Algumas máquinas pegam IPs bloqueados pelo Google; com 8 execuções por dia sobra
-    # capacidade para todos os destinos serem verificados mesmo assim.
+    # A cada hora (00:17, 01:17 ... 23:17). Na prática o GitHub descarta boa parte dos
+    # agendamentos em horários de carga, então pedimos muitos para garantir alguns.
+    # Cada execução usa uma máquina nova (outro IP) e segue a fila de destinos até
+    # terminar ou até detectar bloqueio do Google (destinos_por_execucao no config.json).
+    # Repositório público: os minutos do GitHub Actions são ilimitados.
     # Minuto "quebrado" de propósito: nos horários cheios o GitHub atrasa as execuções.
-    - cron: "17 */3 * * *"
+    - cron: "17 * * * *"
       timezone: "America/Sao_Paulo"
   workflow_dispatch: # cria o botão "Run workflow" para rodar manualmente
+    inputs:
+      destinos:
+        description: "Opcional: códigos IATA separados por espaço (ex.: PMW SCL). Vazio = segue a fila."
+        required: false
+        default: ""
 
 # O token automático do GitHub precisa de escrita para salvar o historico.json.
 permissions:
@@ -23,7 +29,7 @@ concurrency:
 jobs:
   monitorar:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Baixar o código
@@ -46,7 +52,9 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+          # Passado por variável de ambiente (e não direto no comando) por segurança.
+          DESTINOS: ${{ inputs.destinos }}
+        run: python main.py $DESTINOS
 
       - name: Salvar o histórico no repositório
         # Roda mesmo se o monitor terminar com erro, para não perder alertas já enviados.

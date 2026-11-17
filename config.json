@@ -27,7 +27,7 @@
   "pais": "BR",
   "candidatos_por_destino": 3,
   "pausa_entre_buscas_segundos": 4,
-  "destinos_por_execucao": 3,
+  "destinos_por_execucao": 12,
   "alertas": {
     "queda_minima_percentual": 10,
     "repetir_apos_dias": 7,
